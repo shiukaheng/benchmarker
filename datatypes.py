@@ -15,7 +15,11 @@ class Image(SQLModel, table=True):
     id: str = Field(primary_key=True)
     repo: str
     digest: str
-    tags: str  # JSON list of tags, e.g. '["latest", "v1.0"]'
+
+
+class ImageTag(SQLModel, table=True):
+    image_id: str = Field(foreign_key="image.id", primary_key=True)
+    tag: str = Field(primary_key=True)
 
 
 class JobStatus(str, Enum):

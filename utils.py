@@ -6,7 +6,7 @@ from collections import defaultdict
 import boto3
 import oras.client
 
-from datatypes import Dataset, Image
+from datatypes import Dataset, Image, ImageTag
 
 
 def calc_image_id(repo: str, digest: str) -> str:
@@ -63,11 +63,13 @@ def get_datasets(search_prefixes: List[SearchPrefix]) -> List[Dataset]:
     return datasets
 
 
-def get_images(repos: List[str]) -> List[Image]:
+def get_images(repos: List[str]) -> tuple[List[Image], List[ImageTag]]:
     """
     use oras to list images on oci repo
+    returns tuple of (images, image_tags)
     """
     images = []
+    image_tags = []
     
     for repo in repos:
         parts = repo.split('/', 1)
@@ -98,10 +100,15 @@ def get_images(repos: List[str]) -> List[Image]:
                 images.append(Image(
                     id=image_id,
                     repo=repo,
-                    digest=digest,
-                    tags=json.dumps(sorted(tag_list))
+                    digest=digest
                 ))
+                
+                for tag in tag_list:
+                    image_tags.append(ImageTag(
+                        image_id=image_id,
+                        tag=tag
+                    ))
         except Exception:
             continue
     
-    return images
+    return images, image_tags
