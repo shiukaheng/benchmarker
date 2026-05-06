@@ -4,7 +4,7 @@ from sqlmodel import SQLModel, Field
 
 
 
-class Dataset(SQLModel, table=True):
+class S3File(SQLModel, table=True):
     id: str = Field(primary_key=True)
     endpoint_url: str
     bucket: str
@@ -30,7 +30,7 @@ class JobStatus(str, Enum):
 
 
 class Job(SQLModel, table=True):
-    dataset_id: str = Field(foreign_key="dataset.id", primary_key=True)
+    s3file_id: str = Field(foreign_key="s3file.id", primary_key=True)
     image_id: str = Field(foreign_key="image.id", primary_key=True)
 
     status: str = "pending"

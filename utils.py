@@ -6,13 +6,13 @@ from collections import defaultdict
 import boto3
 import oras.client
 
-from datatypes import Dataset, Image, ImageTag
+from datatypes import S3File, Image, ImageTag
 
 
 def calc_image_id(repo: str, digest: str) -> str:
     return hashlib.sha256(f"{repo}\0{digest}".encode("utf-8")).hexdigest()
 
-def calc_dataset_id(endpoint_url: str, bucket: str, key: str) -> str:
+def calc_s3file_id(endpoint_url: str, bucket: str, key: str) -> str:
     return hashlib.sha256(f"{endpoint_url}\0{bucket}\0{key}".encode("utf-8")).hexdigest()
 
 
@@ -33,12 +33,12 @@ def group_s3_prefixes(
     return dict(grouped)
 
 
-def get_datasets(search_prefixes: List[SearchPrefix]) -> List[Dataset]:
+def get_s3files(search_prefixes: List[SearchPrefix]) -> List[S3File]:
     """
-    use boto3 to find all datasets (files on s3(like) really..) matching criteria
+    use boto3 to find all s3 files matching criteria
     """
     grouped = group_s3_prefixes(search_prefixes)
-    datasets = []
+    s3files = []
     
     for (endpoint_url, bucket), prefixes in grouped.items():
         client = boto3.client(
@@ -52,15 +52,15 @@ def get_datasets(search_prefixes: List[SearchPrefix]) -> List[Dataset]:
             for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
                 for obj in page.get('Contents', []):
                     key = obj['Key']
-                    dataset_id = calc_dataset_id(endpoint_url or '', bucket, key)
-                    datasets.append(Dataset(
-                        id=dataset_id,
+                    s3file_id = calc_s3file_id(endpoint_url or '', bucket, key)
+                    s3files.append(S3File(
+                        id=s3file_id,
                         endpoint_url=endpoint_url or '',
                         bucket=bucket,
                         key=key
                     ))
     
-    return datasets
+    return s3files
 
 
 def get_images(repos: List[str]) -> tuple[List[Image], List[ImageTag]]:
