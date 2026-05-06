@@ -8,8 +8,8 @@ from datatypes import Dataset, Image
 def calc_image_id(repo: str, digest: str) -> str:
     return hashlib.sha256(f"{repo}\0{digest}".encode("utf-8")).hexdigest()
 
-def calc_dataset_id(endpoint_url, bucket, key) -> str:
-    raise NotImplementedError()
+def calc_dataset_id(endpoint_url: str, bucket: str, key: str) -> str:
+    return hashlib.sha256(f"{endpoint_url}\0{bucket}\0{key}".encode("utf-8")).hexdigest()
 
 
 class SearchPrefix(NamedTuple):
