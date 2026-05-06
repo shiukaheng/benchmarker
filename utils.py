@@ -1,8 +1,10 @@
 import hashlib
+import json
 from typing import List, NamedTuple
 from collections import defaultdict
 
 import boto3
+import oras.client
 
 from datatypes import Dataset, Image
 
@@ -65,4 +67,41 @@ def get_images(repos: List[str]) -> List[Image]:
     """
     use oras to list images on oci repo
     """
-    return NotImplementedError()
+    images = []
+    
+    for repo in repos:
+        parts = repo.split('/', 1)
+        if len(parts) != 2:
+            continue
+        
+        hostname, repo_path = parts
+        
+        try:
+            client = oras.client.OrasClient(hostname=hostname)
+            tags = client.get_tags(repo_path)
+            
+            digest_tags = defaultdict(list)
+            
+            for tag in tags:
+                try:
+                    container = client.get_container(f"{hostname}/{repo_path}:{tag}")
+                    manifest = client.get_manifest(container)
+                    manifest_bytes = json.dumps(manifest, separators=(',', ':'), sort_keys=True).encode('utf-8')
+                    manifest_digest = 'sha256:' + hashlib.sha256(manifest_bytes).hexdigest()
+                    
+                    digest_tags[manifest_digest].append(tag)
+                except Exception:
+                    continue
+            
+            for digest, tag_list in digest_tags.items():
+                image_id = calc_image_id(repo, digest)
+                images.append(Image(
+                    id=image_id,
+                    repo=repo,
+                    digest=digest,
+                    tags=json.dumps(sorted(tag_list))
+                ))
+        except Exception:
+            continue
+    
+    return images
