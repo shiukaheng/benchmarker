@@ -5,10 +5,13 @@ from sqlmodel import SQLModel, Field
 
 
 class Dataset(SQLModel, table=True):
-    path: str = Field(primary_key=True)
+    id: str = Field(primary_key=True)
+    endpoint_url: str
+    bucket: str
+    key: str
 
 
-class Model(SQLModel, table=True):
+class Image(SQLModel, table=True):
     id: str = Field(primary_key=True)
     repo: str
     digest: str
@@ -24,6 +27,6 @@ class JobStatus(str, Enum):
 
 class Job(SQLModel, table=True):
     dataset_path: str = Field(foreign_key="dataset.path", primary_key=True)
-    model_id: str = Field(foreign_key="model.id", primary_key=True)
+    image_id: str = Field(foreign_key="image.id", primary_key=True)
 
     status: str = "pending"
