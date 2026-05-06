@@ -31,13 +31,13 @@ def group_s3_prefixes(
 
 def get_datasets(search_prefixes: List[SearchPrefix]) -> List[Dataset]:
     """
-    use boto3 to find all datasets matching criteria
+    use boto3 to find all datasets (files on s3(like) really..) matching criteria
     """
     return NotImplementedError()
 
 
 def get_images(repos: List[str]) -> List[Image]:
     """
-    use oras to list images
+    use oras to list images on oci repo
     """
     return NotImplementedError()
