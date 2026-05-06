@@ -1,10 +1,8 @@
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 
 
-class Item(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    name: str
-
+class Dataset(SQLModel, table=True):
+    path: str = Field(primary_key=True)
 
 engine = create_engine("sqlite:///app.db")
 
@@ -12,12 +10,10 @@ SQLModel.metadata.create_all(engine)
 
 with Session(engine) as session:
     for i in range(10):
-        session.add(Item(name=f"item-{i}"))
-
+        session.add(Dataset(path=f"{i}.zip"))
     session.commit()
 
 with Session(engine) as session:
-    items = session.exec(select(Item)).all()
-
+    items = session.exec(select(Dataset)).all()
     for item in items:
-        print(item.id, item.name)
+        print(item.path)
