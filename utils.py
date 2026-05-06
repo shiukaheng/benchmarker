@@ -2,6 +2,8 @@ import hashlib
 from typing import List, NamedTuple
 from collections import defaultdict
 
+import boto3
+
 from datatypes import Dataset, Image
 
 
@@ -33,7 +35,30 @@ def get_datasets(search_prefixes: List[SearchPrefix]) -> List[Dataset]:
     """
     use boto3 to find all datasets (files on s3(like) really..) matching criteria
     """
-    return NotImplementedError()
+    grouped = group_s3_prefixes(search_prefixes)
+    datasets = []
+    
+    for (endpoint_url, bucket), prefixes in grouped.items():
+        client = boto3.client(
+            's3',
+            endpoint_url=endpoint_url if endpoint_url else None
+        )
+        
+        for prefix in prefixes:
+            paginator = client.get_paginator('list_objects_v2')
+            
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                for obj in page.get('Contents', []):
+                    key = obj['Key']
+                    dataset_id = calc_dataset_id(endpoint_url or '', bucket, key)
+                    datasets.append(Dataset(
+                        id=dataset_id,
+                        endpoint_url=endpoint_url or '',
+                        bucket=bucket,
+                        key=key
+                    ))
+    
+    return datasets
 
 
 def get_images(repos: List[str]) -> List[Image]:

@@ -26,7 +26,7 @@ class JobStatus(str, Enum):
 
 
 class Job(SQLModel, table=True):
-    dataset_path: str = Field(foreign_key="dataset.path", primary_key=True)
+    dataset_id: str = Field(foreign_key="dataset.id", primary_key=True)
     image_id: str = Field(foreign_key="image.id", primary_key=True)
 
     status: str = "pending"
