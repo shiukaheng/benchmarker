@@ -65,6 +65,14 @@ spec:
         - - name: sfm-postprocessed
             template: sfm-postprocessed
 
+        # Stage 4: Finalizer - Archive and upload results
+        - - name: finalizer
+            template: finalizer
+            arguments:
+              parameters:
+                - name: output_s3_file
+                  value: "{{inputs.parameters.output_s3_file}}"
+
     # Stage 0: Initializer - Download input from S3
     - name: initializer
       inputs:
@@ -166,3 +174,28 @@ spec:
         - key: nvidia.com/gpu
           operator: Exists
           effect: NoSchedule
+
+    # Stage 4: Finalizer - Archive sfm_postprocessed and upload to S3
+    - name: finalizer
+      inputs:
+        parameters:
+          - name: output_s3_file
+      container:
+        image: "amazon/aws-cli:latest"
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+          - |
+            yum install -y zip && \
+            cd /workspace && \
+            zip -r sfm_postprocessed.zip sfm_postprocessed/ && \
+            aws s3 cp sfm_postprocessed.zip "{{inputs.parameters.output_s3_file}}"
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: "500m"
+          limits:
+            memory: 2Gi
