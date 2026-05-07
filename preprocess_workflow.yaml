@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: hello-template
+  namespace: material-gaussians
+spec:
+  entrypoint: main
+
+  arguments:
+    parameters:
+      - name: name
+        value: world   # default value
+
+  templates:
+    - name: main
+      inputs:
+        parameters:
+          - name: name
+      container:
+        image: alpine:latest
+        command: [sh, -c]
+        args:
+          - echo "Hello {{inputs.parameters.name}}"
