@@ -18,7 +18,7 @@ spec:
         value: ""
 
   # Use dedicated service account for workflow pods
-  serviceAccountName: mgs-pipeline-workflow
+  serviceAccountName: product-apps-workflow
 
   # PVC for shared data between stages
   volumeClaimTemplates:
@@ -26,7 +26,7 @@ spec:
         name: workspace
       spec:
         accessModes: ["ReadWriteOnce"]
-        storageClassName: standard
+        storageClassName: gp3-immediate
         resources:
           requests:
             storage: 50Gi
