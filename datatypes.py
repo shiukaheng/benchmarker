@@ -30,7 +30,7 @@ class JobStatus(str, Enum):
 
 
 class Job(SQLModel, table=True):
-    s3file_id: str = Field(foreign_key="s3file.id", primary_key=True)
-    image_id: str = Field(foreign_key="image.id", primary_key=True)
-
+    input_file_id: str = Field(foreign_key="s3file.id", primary_key=True)
+    workflow_template: str = Field(primary_key=True)
+    output_file_id: str = Field(primary_key=True) # not foreign key because it may or may not exist yet
     status: str = "pending"
