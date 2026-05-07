@@ -1,23 +1,156 @@
+---
+# WorkflowTemplate for MGS pipeline v2
+# Six-stage pipeline: initializer -> normalizer -> sfm -> sfm_postprocessed -> splat -> finalizer
+# NOTE: gs-train (splat) stage and finalizer stage are commented out for now
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
-  name: hello-template
+  name: mgs-pipeline
   namespace: material-gaussians
 spec:
-  entrypoint: main
+  entrypoint: pipeline
 
   arguments:
     parameters:
-      - name: name
-        value: world   # default value
+      - name: input_s3_file
+        value: ""
+      - name: output_s3_file
+        value: ""
+
+  # Use dedicated service account for workflow pods
+  serviceAccountName: mgs-pipeline-workflow
+
+  # PVC for shared data between stages
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 50Gi
+
+  # Delete PVC after workflow completes (extended for debugging)
+  ttlStrategy:
+    secondsAfterCompletion: 86400  # 24 hours
+    secondsAfterSuccess: 86400     # 24 hours
+    secondsAfterFailure: 172800    # 48 hours
 
   templates:
-    - name: main
-      inputs:
-        parameters:
-          - name: name
+    # Main pipeline with sequential steps
+    - name: pipeline
+      steps:
+        # Stage 0: Download input from S3
+        - - name: initializer
+            template: initializer
+
+        # Stage 1: Normalize input (video/archive/images -> JPEG frames)
+        - - name: normalizer
+            template: normalizer
+
+        # Stage 2: SfM reconstruction
+        - - name: sfm
+            template: sfm
+
+        # Stage 3: Postprocess SfM (da3, cutter, zoomer, scaler)
+        - - name: sfm-postprocessed
+            template: sfm-postprocessed
+
+    # Stage 0: Initializer - Download input from S3
+    - name: initializer
       container:
-        image: alpine:latest
-        command: [sh, -c]
-        args:
-          - echo "Hello {{inputs.parameters.name}}"
+        image: "dummy-registry.io/mgs-initializer:v1.0.0-dummy"
+        imagePullPolicy: IfNotPresent
+        command: ["/root/.local/bin/uv", "run", "--no-sync", "--python-platform", "linux", "mgs-initializer"]
+        env:
+          - name: OUTPUT_DIR
+            value: /workspace/input
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: "500m"
+          limits:
+            memory: 1Gi
+
+    # Stage 1: Normalizer - Convert input to JPEG frames
+    - name: normalizer
+      container:
+        image: "dummy-registry.io/mgs-normalizer:v1.0.0-dummy"
+        imagePullPolicy: IfNotPresent
+        command: ["/root/.local/bin/uv", "run", "--no-sync", "--python-platform", "linux", "mgs-normalizer"]
+        env:
+          - name: INPUT_DIR
+            value: /workspace/input
+          - name: OUTPUT_DIR
+            value: /workspace/normalized
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: "1"
+          limits:
+            memory: 4Gi
+
+    # Stage 2: SfM reconstruction (needs GPU for feature extraction acceleration)
+    - name: sfm
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      container:
+        image: "dummy-registry.io/mgs-sfm:v1.0.0-dummy"
+        imagePullPolicy: IfNotPresent
+        command: ["/entrypoint.sh", "/root/.local/bin/uv", "run", "--no-sync", "--python-platform", "linux", "sfm"]
+        env:
+          - name: INPUT_DIR
+            value: /workspace/normalized
+          - name: OUTPUT_DIR
+            value: /workspace/sfm
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            memory: 8Gi
+            cpu: "4"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: 16Gi
+            nvidia.com/gpu: "1"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+    # Stage 3: Postprocess SfM (requires GPU for DA3 depth estimation)
+    - name: sfm-postprocessed
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      container:
+        image: "dummy-registry.io/mgs-postprocess-sfm:v1.0.0-dummy"
+        imagePullPolicy: IfNotPresent
+        command: ["/entrypoint.sh", "/root/.local/bin/uv", "run", "--no-sync", "--python-platform", "linux", "postprocess-sfm"]
+        env:
+          - name: INPUT_DIR
+            value: /workspace/sfm
+          - name: OUTPUT_DIR
+            value: /workspace/sfm_postprocessed
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            memory: 16Gi
+            cpu: "4"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: 32Gi
+            nvidia.com/gpu: "1"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
