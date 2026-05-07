@@ -120,7 +120,7 @@ spec:
     # Stage 2: SfM reconstruction (needs GPU for feature extraction acceleration)
     - name: sfm
       nodeSelector:
-        nvidia.com/gpu.present: "true"
+        workload-type: gpu
       container:
         image: "223952452436.dkr.ecr.eu-west-2.amazonaws.com/m-xr/material-gaussians-sfm:benchmark-latest"
         imagePullPolicy: IfNotPresent
@@ -149,7 +149,7 @@ spec:
     # Stage 3: Postprocess SfM (requires GPU for DA3 depth estimation)
     - name: sfm-postprocessed
       nodeSelector:
-        nvidia.com/gpu.present: "true"
+        workload-type: gpu
       container:
         image: "223952452436.dkr.ecr.eu-west-2.amazonaws.com/m-xr/material-gaussians-postprocess-sfm:benchmark-latest"
         imagePullPolicy: IfNotPresent
