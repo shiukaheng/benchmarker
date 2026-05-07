@@ -63,52 +63,109 @@ def get_s3files(search_prefixes: List[SearchPrefix]) -> List[S3File]:
     return s3files
 
 
+def _is_ecr_repo(hostname: str) -> bool:
+    """Check if hostname is an AWS ECR registry."""
+    return ".dkr.ecr." in hostname and hostname.endswith(".amazonaws.com")
+
+
+def _get_ecr_images(repo: str, hostname: str, repo_path: str) -> tuple[List[Image], List[ImageTag]]:
+    """Get images from ECR using boto3."""
+    # Parse: 223952452436.dkr.ecr.eu-west-2.amazonaws.com
+    parts = hostname.split(".")
+    if len(parts) < 4:
+        return [], []
+
+    registry_id = parts[0]
+    region = parts[3]
+
+    client = boto3.client("ecr", region_name=region)
+    paginator = client.get_paginator("describe_images")
+    images = []
+    image_tags = []
+
+    for page in paginator.paginate(registryId=registry_id, repositoryName=repo_path):
+        for img in page.get("imageDetails", []):
+            digest = img["imageDigest"]
+            image_id = calc_image_id(repo, digest)
+
+            images.append(Image(
+                id=image_id,
+                repo=repo,
+                digest=digest
+            ))
+
+            for tag in img.get("imageTags", []):
+                image_tags.append(ImageTag(
+                    image_id=image_id,
+                    tag=tag
+                ))
+
+    return images, image_tags
+
+
+def _get_oras_images(repo: str, hostname: str, repo_path: str) -> tuple[List[Image], List[ImageTag]]:
+    """Get images from OCI registry using oras."""
+    images = []
+    image_tags = []
+
+    client = oras.client.OrasClient(hostname=hostname)
+    tags = client.get_tags(repo_path)
+
+    digest_tags = defaultdict(list)
+
+    for tag in tags:
+        try:
+            container = client.get_container(f"{hostname}/{repo_path}:{tag}")
+            manifest = client.get_manifest(container)
+            manifest_bytes = json.dumps(manifest, separators=(',', ':'), sort_keys=True).encode('utf-8')
+            manifest_digest = 'sha256:' + hashlib.sha256(manifest_bytes).hexdigest()
+
+            digest_tags[manifest_digest].append(tag)
+        except Exception:
+            continue
+
+    for digest, tag_list in digest_tags.items():
+        image_id = calc_image_id(repo, digest)
+        images.append(Image(
+            id=image_id,
+            repo=repo,
+            digest=digest
+        ))
+
+        for tag in tag_list:
+            image_tags.append(ImageTag(
+                image_id=image_id,
+                tag=tag
+            ))
+
+    return images, image_tags
+
+
 def get_images(repos: List[str]) -> tuple[List[Image], List[ImageTag]]:
     """
-    use oras to list images on oci repo
-    returns tuple of (images, image_tags)
+    List images on OCI repos.
+    Uses boto3 for ECR repos, oras for others.
+    Returns tuple of (images, image_tags).
     """
     images = []
     image_tags = []
-    
+
     for repo in repos:
         parts = repo.split('/', 1)
         if len(parts) != 2:
             continue
-        
+
         hostname, repo_path = parts
-        
+
         try:
-            client = oras.client.OrasClient(hostname=hostname)
-            tags = client.get_tags(repo_path)
-            
-            digest_tags = defaultdict(list)
-            
-            for tag in tags:
-                try:
-                    container = client.get_container(f"{hostname}/{repo_path}:{tag}")
-                    manifest = client.get_manifest(container)
-                    manifest_bytes = json.dumps(manifest, separators=(',', ':'), sort_keys=True).encode('utf-8')
-                    manifest_digest = 'sha256:' + hashlib.sha256(manifest_bytes).hexdigest()
-                    
-                    digest_tags[manifest_digest].append(tag)
-                except Exception:
-                    continue
-            
-            for digest, tag_list in digest_tags.items():
-                image_id = calc_image_id(repo, digest)
-                images.append(Image(
-                    id=image_id,
-                    repo=repo,
-                    digest=digest
-                ))
-                
-                for tag in tag_list:
-                    image_tags.append(ImageTag(
-                        image_id=image_id,
-                        tag=tag
-                    ))
+            if _is_ecr_repo(hostname):
+                imgs, tags = _get_ecr_images(repo, hostname, repo_path)
+            else:
+                imgs, tags = _get_oras_images(repo, hostname, repo_path)
+
+            images.extend(imgs)
+            image_tags.extend(tags)
         except Exception:
             continue
-    
+
     return images, image_tags
