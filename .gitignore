@@ -1,1 +1,3 @@
 app.db
+benchmark.db
+__pycache__/
