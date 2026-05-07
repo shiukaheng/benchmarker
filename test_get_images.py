@@ -35,13 +35,13 @@ def bulk_upsert_images(
                 index_elements=["id"],
                 set_={"repo": stmt.excluded.repo, "digest": stmt.excluded.digest}
             )
-            session.execute(stmt)
+            session.exec(stmt)
 
         # Bulk insert tags - ignore duplicates
         if image_tags:
             tag_data = [{"image_id": t.image_id, "tag": t.tag} for t in image_tags]
             stmt = insert(ImageTag).values(tag_data).on_conflict_do_nothing()
-            session.execute(stmt)
+            session.exec(stmt)
 
         session.commit()
 
