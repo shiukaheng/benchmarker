@@ -40,10 +40,18 @@ spec:
   templates:
     # Main pipeline with sequential steps
     - name: pipeline
+      inputs:
+        parameters:
+          - name: input_s3_file
+          - name: output_s3_file
       steps:
         # Stage 0: Download input from S3
         - - name: initializer
             template: initializer
+            arguments:
+              parameters:
+                - name: input_s3_file
+                  value: "{{inputs.parameters.input_s3_file}}"
 
         # Stage 1: Normalize input (video/archive/images -> JPEG frames)
         - - name: normalizer
@@ -59,13 +67,17 @@ spec:
 
     # Stage 0: Initializer - Download input from S3
     - name: initializer
+      inputs:
+        parameters:
+          - name: input_s3_file
       container:
-        image: "dummy-registry.io/mgs-initializer:v1.0.0-dummy"
+        image: "amazon/aws-cli:latest"
         imagePullPolicy: IfNotPresent
-        command: ["/root/.local/bin/uv", "run", "--no-sync", "--python-platform", "linux", "mgs-initializer"]
-        env:
-          - name: OUTPUT_DIR
-            value: /workspace/input
+        command: ["sh", "-c"]
+        args:
+          - |
+            mkdir -p /workspace/input && \
+            aws s3 cp "{{inputs.parameters.input_s3_file}}" /workspace/input/
         volumeMounts:
           - name: workspace
             mountPath: /workspace
@@ -79,7 +91,7 @@ spec:
     # Stage 1: Normalizer - Convert input to JPEG frames
     - name: normalizer
       container:
-        image: "dummy-registry.io/mgs-normalizer:v1.0.0-dummy"
+        image: "223952452436.dkr.ecr.eu-west-2.amazonaws.com/m-xr/material-gaussians-mgs-normalizer:benchmark-latest"
         imagePullPolicy: IfNotPresent
         command: ["/root/.local/bin/uv", "run", "--no-sync", "--python-platform", "linux", "mgs-normalizer"]
         env:
@@ -102,7 +114,7 @@ spec:
       nodeSelector:
         nvidia.com/gpu.present: "true"
       container:
-        image: "dummy-registry.io/mgs-sfm:v1.0.0-dummy"
+        image: "223952452436.dkr.ecr.eu-west-2.amazonaws.com/m-xr/material-gaussians-sfm:benchmark-latest"
         imagePullPolicy: IfNotPresent
         command: ["/entrypoint.sh", "/root/.local/bin/uv", "run", "--no-sync", "--python-platform", "linux", "sfm"]
         env:
@@ -131,7 +143,7 @@ spec:
       nodeSelector:
         nvidia.com/gpu.present: "true"
       container:
-        image: "dummy-registry.io/mgs-postprocess-sfm:v1.0.0-dummy"
+        image: "223952452436.dkr.ecr.eu-west-2.amazonaws.com/m-xr/material-gaussians-postprocess-sfm:benchmark-latest"
         imagePullPolicy: IfNotPresent
         command: ["/entrypoint.sh", "/root/.local/bin/uv", "run", "--no-sync", "--python-platform", "linux", "postprocess-sfm"]
         env:
