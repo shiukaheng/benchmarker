@@ -33,13 +33,9 @@ def my_generator(session: Session) -> list[Job]:
 
     For each S3 file in benchmark_source_jpeg_datasets/, create a job
     that outputs to benchmark_preprocessed_jpeg_datasets/ with the same suffix.
-    """
-    # Get existing jobs to avoid duplicates
-    existing = {
-        (j.input_file_id, j.workflow_template)
-        for j in session.exec(select(Job)).all()
-    }
 
+    Note: insert_jobs() handles duplicate checking (ON CONFLICT DO NOTHING).
+    """
     # Get input files from the specific bucket and prefix
     files = session.exec(
         select(S3File)
@@ -47,23 +43,17 @@ def my_generator(session: Session) -> list[Job]:
         .where(S3File.key.like(f"{INPUT_PREFIX}%"))
     ).all()
 
-    new_jobs = []
-    for f in files:
-        # Skip if job already exists for this input + template
-        if (f.id, WORKFLOW_TEMPLATE) in existing:
-            continue
-
-        # Calculate deterministic output file ID
-        output_id = calc_output_file_id(f)
-
-        new_jobs.append(Job(
+    # Generate jobs for all matching files
+    # Duplicates are handled by insert_jobs() with ON CONFLICT DO NOTHING
+    return [
+        Job(
             input_file_id=f.id,
             workflow_template=WORKFLOW_TEMPLATE,
-            output_file_id=output_id,
+            output_file_id=calc_output_file_id(f),
             status="pending",
-        ))
-
-    return new_jobs
+        )
+        for f in files
+    ]
 
 
 def main():
