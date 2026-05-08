@@ -1,4 +1,4 @@
-"""Main sync script for updating database from external sources."""
+"""Sync script for updating database from external sources."""
 from sqlmodel import SQLModel, create_engine
 
 from sync_utils import sync_images, sync_s3_files, sync_workflows
