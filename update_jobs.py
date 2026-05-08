@@ -7,7 +7,7 @@ import argparse
 
 from sqlmodel import Session, select
 
-from lib.jobs import update_jobs
+from lib.job_generation_utils import update_jobs
 from lib.datatypes import Job, S3File
 
 
