@@ -4,7 +4,7 @@ from lib.datatypes import S3File, Image, ImageTag, Workflow, Job, JobStatus
 from lib.utils import SearchPrefix, get_s3files, get_images, get_workflows
 from lib.sync import sync_images, sync_s3_files, sync_workflows
 from lib.actions import LaunchWorkflowAction, UpdateJobStateAction, ReconcileAction
-from lib.populate import insert_jobs, update_jobs
+from lib.jobs import insert_jobs, update_jobs
 from lib.reconcile import (
     ReconcileState,
     WorkflowRef,
