@@ -17,7 +17,7 @@ def main():
 
     # Sync S3 files
     bucket = "material-gaussians-data-dev"
-    prefix = "benchmark_source_jpeg_datasets/"
+    prefix = ""
     print(f"Syncing S3 files from: s3://{bucket}/{prefix}")
     search_prefixes = [SearchPrefix(endpoint_url="", bucket=bucket, prefix=prefix)]
     s3files = sync_s3_files(engine, search_prefixes)
