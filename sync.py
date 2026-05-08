@@ -16,7 +16,7 @@ def main():
     print(f"  -> Synced {len(images)} images, {len(image_tags)} tags")
 
     # Sync S3 files
-    bucket = "mxr-internal-research-gaussian-splats"
+    bucket = "material-gaussians-data-dev"
     prefix = "benchmark_source_jpeg_datasets/"
     print(f"Syncing S3 files from: s3://{bucket}/{prefix}")
     search_prefixes = [SearchPrefix(endpoint_url="", bucket=bucket, prefix=prefix)]
