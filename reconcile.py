@@ -38,6 +38,7 @@ def get_k8s_workflow_state(
 
     Returns:
         K8sState if workflow exists, None if it doesn't exist.
+        Returns K8sState.pending if status or phase is missing (workflow not yet processed).
     """
     try:
         wf = api.get_namespaced_custom_object(
@@ -47,7 +48,16 @@ def get_k8s_workflow_state(
             plural="workflows",
             name=name,
         )
-        phase = wf.get("status", {}).get("phase", "Unknown")
+        status = wf.get("status")
+        if status is None:
+            # Workflow exists but controller hasn't processed it yet
+            return K8sState.pending
+
+        phase = status.get("phase")
+        if phase is None:
+            # Phase not yet assigned - treat as pending
+            return K8sState.pending
+
         return K8sState(phase)
     except client.ApiException as e:
         if e.status == 404:
