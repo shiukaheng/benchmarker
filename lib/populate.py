@@ -40,7 +40,7 @@ def insert_jobs(session: Session, jobs: list[Job]) -> tuple[int, int]:
 
 def update_jobs(
     engine,
-    generator: Callable[[Session], list[Job]],
+    generators: list[Callable[[Session], list[Job]]],
     dry_run: bool = False,
 ) -> list[Job]:
     """Generate jobs from database state and insert them.
@@ -50,20 +50,24 @@ def update_jobs(
 
     Args:
         engine: SQLAlchemy engine
-        generator: Function that takes a Session and returns list of Job objects
+        generators: List of functions that take a Session and return list of Job objects
         dry_run: If True, generate only without inserting
 
     Returns:
-        List of jobs (generated or inserted)
+        List of all jobs (generated or inserted)
     """
     with Session(engine) as session:
-        jobs = generator(session)
+        # Run all generators and merge results
+        all_jobs: list[Job] = []
+        for gen in generators:
+            jobs = gen(session)
+            all_jobs.extend(jobs)
 
         if dry_run:
-            print(f"[DRY RUN] Generated {len(jobs)} jobs (not inserting)")
-            return jobs
+            print(f"[DRY RUN] Generated {len(all_jobs)} jobs (not inserting)")
+            return all_jobs
 
-        inserted, skipped = insert_jobs(session, jobs)
+        inserted, skipped = insert_jobs(session, all_jobs)
         session.commit()
-        print(f"Generated {len(jobs)} jobs, inserted {inserted}, skipped {skipped} duplicates")
-        return jobs
+        print(f"Generated {len(all_jobs)} jobs, inserted {inserted}, skipped {skipped} duplicates")
+        return all_jobs

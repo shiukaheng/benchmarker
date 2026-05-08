@@ -1,6 +1,7 @@
 """Update jobs by generating new work from database state.
 
 Replace my_generator() with your own logic for creating jobs.
+Add multiple generators to the list to compose different job creation strategies.
 """
 import argparse
 
@@ -42,7 +43,9 @@ def main():
     from sqlmodel import create_engine
     engine = create_engine("sqlite:///benchmark.db")
 
-    update_jobs(engine, generator=my_generator, dry_run=args.dry_run)
+    # Pass multiple generators to compose different strategies
+    # update_jobs(engine, generators=[gen_datasets, gen_experiments, gen_backfill], ...)
+    update_jobs(engine, generators=[my_generator], dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
