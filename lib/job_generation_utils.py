@@ -1,10 +1,33 @@
 """Job population utilities - generate and insert jobs into database."""
+import hashlib
 from typing import Callable
 
 from sqlalchemy.dialects.sqlite import insert
 from sqlmodel import Session
 
 from lib.datatypes import Job
+
+
+def calc_workflow_name(job: Job, namespace: str = "material-gaussians") -> str:
+    """Calculate deterministic workflow name for a job.
+
+    This ensures the same job always maps to the same workflow name,
+    preventing accidental duplicate launches.
+
+    Args:
+        job: The job to calculate workflow name for
+        namespace: K8s namespace (included in hash for uniqueness)
+
+    Returns:
+        Deterministic workflow name (max 63 chars for K8s)
+    """
+    # Hash the job's unique identity (composite PK)
+    unique_str = f"{namespace}\0{job.input_file_id}\0{job.workflow_template}\0{job.output_file_id}"
+    hash_suffix = hashlib.sha256(unique_str.encode("utf-8")).hexdigest()[:8]
+
+    # Build name: template-hash (K8s limit: 63 chars)
+    base = job.workflow_template[:54]  # Leave room for dash + 8 char hash
+    return f"{base}-{hash_suffix}"
 
 
 def insert_jobs(session: Session, jobs: list[Job]) -> tuple[int, int]:

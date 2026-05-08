@@ -7,6 +7,7 @@ from sqlmodel import Session, select
 
 from lib.datatypes import Job, JobStatus, S3File, Workflow
 from lib.actions import LaunchWorkflowAction, UpdateJobStateAction, ReconcileAction
+from lib.job_generation_utils import calc_workflow_name
 
 
 class ReconcileState(str, Enum):
@@ -59,7 +60,7 @@ def compute_job_state(
     return ReconcileState.pending
 
 
-def plan_reconciliation(engine) -> list[ReconcileAction]:
+def plan_reconciliation(engine, namespace: str = "material-gaussians") -> list[ReconcileAction]:
     """Generate a plan of actions needed to reconcile jobs.
 
     This is a pure function that examines the current state and produces
@@ -67,6 +68,7 @@ def plan_reconciliation(engine) -> list[ReconcileAction]:
 
     Args:
         engine: SQLAlchemy engine
+        namespace: K8s namespace for workflows
 
     Returns:
         List of actions to execute
@@ -92,7 +94,24 @@ def plan_reconciliation(engine) -> list[ReconcileAction]:
 
         for job in jobs:
             output_exists = job.output_file_id in output_file_ids
+
+            # Check if workflow exists (by stored reference OR deterministic name)
             workflow_phase = get_workflow_phase(workflows, job.workflow_namespace, job.workflow_name)
+
+            # If no stored reference, check if workflow exists by deterministic name
+            if not workflow_phase and not job.workflow_name:
+                expected_name = calc_workflow_name(job, namespace=namespace)
+                workflow_phase = get_workflow_phase(workflows, namespace, expected_name)
+                if workflow_phase:
+                    # Workflow exists but job doesn't have reference - update job
+                    actions.append(UpdateJobStateAction(
+                        action_type="update_job_state",
+                        job_input_file_id=job.input_file_id,
+                        job_workflow_template=job.workflow_template,
+                        new_status="running",  # Assume running if workflow exists
+                        workflow_namespace=namespace,
+                        workflow_name=expected_name,
+                    ))
 
             state = compute_job_state(job, output_exists, workflow_phase)
 
@@ -178,12 +197,15 @@ def _execute_launch_workflow(
     api: client.CustomObjectsApi,
     action: LaunchWorkflowAction,
 ) -> None:
-    """Execute a LaunchWorkflowAction."""
-    import uuid
+    """Execute a LaunchWorkflowAction with deterministic naming."""
+    # Get the job to calculate deterministic name
+    job = session.get(Job, (action.job_input_file_id, action.job_workflow_template))
+    if not job:
+        print(f"  -> ERROR: Job not found for workflow launch")
+        return
 
-    workflow_name = (
-        f"{action.job_workflow_template}-{action.job_input_file_id[:8]}-{str(uuid.uuid4())[:6]}"
-    )
+    # Calculate deterministic workflow name
+    workflow_name = calc_workflow_name(job, namespace=action.namespace)
 
     workflow = {
         "apiVersion": "argoproj.io/v1alpha1",
@@ -213,11 +235,9 @@ def _execute_launch_workflow(
     )
 
     # Update job with workflow reference
-    job = session.get(Job, (action.job_input_file_id, action.job_workflow_template))
-    if job:
-        job.workflow_namespace = action.namespace
-        job.workflow_name = workflow_name
-        job.status = "running"
+    job.workflow_namespace = action.namespace
+    job.workflow_name = workflow_name
+    job.status = "running"
 
     print(f"  -> Launched: {action.namespace}/{workflow_name}")
 
@@ -236,15 +256,16 @@ def _execute_update_job_state(
             job.workflow_name = action.workflow_name
 
 
-def run_reconciliation(engine, dry_run: bool = False):
+def run_reconciliation(engine, dry_run: bool = False, namespace: str = "material-gaussians"):
     """Run full reconciliation loop (plan + execute).
 
     Args:
         engine: SQLAlchemy engine
         dry_run: If True, only print plan without executing
+        namespace: K8s namespace for workflows
     """
     print("Planning reconciliation...")
-    actions = plan_reconciliation(engine)
+    actions = plan_reconciliation(engine, namespace=namespace)
 
     if not actions:
         print("No actions needed.")
