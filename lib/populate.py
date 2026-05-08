@@ -1,4 +1,6 @@
-"""Job population utilities - insert generated jobs into database."""
+"""Job population utilities - generate and insert jobs into database."""
+from typing import Callable
+
 from sqlalchemy.dialects.sqlite import insert
 from sqlmodel import Session
 
@@ -34,3 +36,34 @@ def insert_jobs(session: Session, jobs: list[Job]) -> tuple[int, int]:
     result = session.exec(stmt)
     inserted = result.rowcount if hasattr(result, 'rowcount') else len(jobs)
     return inserted, len(jobs) - inserted
+
+
+def update_jobs(
+    engine,
+    generator: Callable[[Session], list[Job]],
+    dry_run: bool = False,
+) -> list[Job]:
+    """Generate jobs from database state and insert them.
+
+    This is a convenience wrapper that combines generation + insertion.
+    For finer control, use the individual functions.
+
+    Args:
+        engine: SQLAlchemy engine
+        generator: Function that takes a Session and returns list of Job objects
+        dry_run: If True, generate only without inserting
+
+    Returns:
+        List of jobs (generated or inserted)
+    """
+    with Session(engine) as session:
+        jobs = generator(session)
+
+        if dry_run:
+            print(f"[DRY RUN] Generated {len(jobs)} jobs (not inserting)")
+            return jobs
+
+        inserted, skipped = insert_jobs(session, jobs)
+        session.commit()
+        print(f"Generated {len(jobs)} jobs, inserted {inserted}, skipped {skipped} duplicates")
+        return jobs
