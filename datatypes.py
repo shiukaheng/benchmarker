@@ -32,5 +32,9 @@ class JobStatus(str, Enum):
 class Job(SQLModel, table=True):
     input_file_id: str = Field(foreign_key="s3file.id", primary_key=True)
     workflow_template: str = Field(primary_key=True)
-    output_file_id: str = Field(primary_key=True) # not foreign key because it may or may not exist yet
+    output_file_id: str = Field(primary_key=True)  # not foreign key because it may or may not exist yet
     status: str = "pending"
+
+    # Reference to the K8s workflow we launched
+    workflow_namespace: str | None = None
+    workflow_name: str | None = None
