@@ -3,7 +3,6 @@ from enum import Enum
 from sqlmodel import SQLModel, Field
 
 
-
 class S3File(SQLModel, table=True):
     id: str = Field(primary_key=True)
     endpoint_url: str

@@ -6,7 +6,7 @@ from collections import defaultdict
 import boto3
 import oras.client
 
-from datatypes import S3File, Image, ImageTag, Workflow
+from lib.datatypes import S3File, Image, ImageTag, Workflow
 
 
 def calc_image_id(repo: str, digest: str) -> str:

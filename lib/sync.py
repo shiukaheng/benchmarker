@@ -2,8 +2,8 @@
 from sqlalchemy.dialects.sqlite import insert
 from sqlmodel import Session
 
-from datatypes import Image, ImageTag, S3File, Workflow
-from utils import get_images, get_s3files, get_workflows, SearchPrefix
+from lib.datatypes import Image, ImageTag, S3File, Workflow
+from lib.utils import get_images, get_s3files, SearchPrefix
 
 
 def sync_images(engine, repos: list[str]) -> tuple[list[Image], list[ImageTag]]:
@@ -80,6 +80,8 @@ def sync_workflows(engine, namespace: str) -> list[Workflow]:
     Returns:
         List of Workflow objects that were synced
     """
+    from lib.utils import get_workflows
+
     workflows = get_workflows(namespace)
 
     with Session(engine) as session:
