@@ -65,26 +65,23 @@ def get_k8s_workflow_state(
         raise
 
 
-def reconcile_job(
-    session: Session,
+def compute_job_state(
     api: client.CustomObjectsApi,
     job: Job,
     output_exists: bool,
 ) -> ReconcileState:
-    """Reconcile a single job's state.
+    """Compute the state of a single job without modifying it.
 
     Args:
-        session: Database session
         api: K8s CustomObjectsApi
-        job: The job to reconcile
+        job: The job to check
         output_exists: Whether the output file exists in S3 (from DB sync)
 
     Returns:
-        The reconciled state
+        The computed state
     """
     # Case 1: Output exists -> SUCCESS
     if output_exists:
-        job.status = JobStatus.succeeded
         return ReconcileState.success
 
     # Case 2: Have workflow reference -> check K8s
@@ -93,27 +90,52 @@ def reconcile_job(
 
         if k8s_state is None:
             # Workflow doesn't exist (crashed, timed out, manually deleted)
-            job.status = JobStatus.failed
             return ReconcileState.failed
 
         match k8s_state:
             case K8sState.pending | K8sState.unknown:
-                job.status = JobStatus.pending
                 return ReconcileState.pending
             case K8sState.running:
-                job.status = JobStatus.running
                 return ReconcileState.running
             case K8sState.succeeded:
                 # Workflow reports success but no output file -> problem
-                job.status = JobStatus.failed
                 return ReconcileState.failed
             case K8sState.failed | K8sState.error:
-                job.status = JobStatus.failed
                 return ReconcileState.failed
 
     # Case 3: No workflow reference and no output -> need to launch
-    # (Launch happens outside this function)
     return ReconcileState.pending
+
+
+def reconcile_job(
+    session: Session,
+    api: client.CustomObjectsApi,
+    job: Job,
+    output_exists: bool,
+) -> ReconcileState:
+    """Reconcile a single job's state and update the job object.
+
+    Args:
+        session: Database session
+        api: K8s CustomObjectsApi
+        job: The job to reconcile (will be modified)
+        output_exists: Whether the output file exists in S3 (from DB sync)
+
+    Returns:
+        The reconciled state
+    """
+    state = compute_job_state(api, job, output_exists)
+
+    # Map reconcile state to job status
+    status_map = {
+        ReconcileState.success: JobStatus.succeeded,
+        ReconcileState.running: JobStatus.running,
+        ReconcileState.pending: JobStatus.pending,
+        ReconcileState.failed: JobStatus.failed,
+    }
+    job.status = status_map[state]
+
+    return state
 
 
 def launch_workflow(
@@ -171,11 +193,12 @@ def launch_workflow(
     return WorkflowRef(namespace=namespace, name=workflow_name)
 
 
-def run_reconciliation(engine):
+def run_reconciliation(engine, dry_run: bool = False):
     """Run full reconciliation loop.
 
     Args:
         engine: SQLAlchemy engine
+        dry_run: If True, only print what would be done without making changes
     """
     config.load_kube_config()
     api = client.CustomObjectsApi()
@@ -216,11 +239,20 @@ def run_reconciliation(engine):
                 )
                 output_s3 = f"s3://{input_file.bucket}/{output_key}"
 
-            # Reconcile
-            state = reconcile_job(session, api, job, output_exists)
+            # Compute state (read-only if dry_run)
+            if dry_run:
+                state = compute_job_state(api, job, output_exists)
+            else:
+                state = reconcile_job(session, api, job, output_exists)
 
             # Launch if needed
             if state == ReconcileState.pending and not job.workflow_name:
+                if dry_run:
+                    print(f"Job ({job.input_file_id[:8]}, {job.workflow_template}): [DRY RUN] would launch workflow")
+                    print(f"  -> input: {input_s3}")
+                    print(f"  -> output: {output_s3}")
+                    continue
+
                 print(f"Job ({job.input_file_id[:8]}, {job.workflow_template}): launching workflow...")
                 ref = launch_workflow(api, job, input_s3, output_s3)
                 job.workflow_namespace = ref.namespace
@@ -231,11 +263,19 @@ def run_reconciliation(engine):
 
             print(f"Job ({job.input_file_id[:8]}, {job.workflow_template}): {state.value}")
 
-        session.commit()
+        if dry_run:
+            print("\n[DRY RUN] No changes committed")
+        else:
+            session.commit()
 
 
 if __name__ == "__main__":
+    import argparse
     from sqlmodel import create_engine
 
+    parser = argparse.ArgumentParser(description="Reconcile job states with K8s workflows")
+    parser.add_argument("--dry-run", action="store_true", help="Print what would be done without making changes")
+    args = parser.parse_args()
+
     engine = create_engine("sqlite:///benchmark.db")
-    run_reconciliation(engine)
+    run_reconciliation(engine, dry_run=args.dry_run)
