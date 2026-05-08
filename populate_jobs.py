@@ -3,7 +3,7 @@ import argparse
 
 from sqlmodel import create_engine
 
-from lib.populate import generate_cartesian_jobs, run
+from lib.populate import generate_cartesian_jobs, populate
 
 
 def main():
@@ -22,7 +22,7 @@ def main():
             image_tag_filter=args.image_tag_filter,
         )
 
-    jobs = run(engine, generator=generator, dry_run=args.dry_run)
+    jobs = populate(engine, generator=generator, dry_run=args.dry_run)
 
     if args.dry_run:
         print(f"[DRY RUN] Would create {len(jobs)} new jobs:")

@@ -73,12 +73,12 @@ def insert_jobs(session: Session, jobs: list[Job]) -> tuple[int, int]:
     return inserted, len(jobs) - inserted
 
 
-def run(
+def populate(
     engine,
     generator: Callable[[Session], list[Job]],
     dry_run: bool = False,
 ) -> list[Job]:
-    """Run job population."""
+    """Populate jobs from database state."""
     with Session(engine) as session:
         jobs = generator(session)
 
