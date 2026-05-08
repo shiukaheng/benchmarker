@@ -1,0 +1,29 @@
+a job is defined by
+- an input file (must exist)
+- an output file (that may not yet exist, but we can check)
+- a workflow template
+
+we want to infer:
+- what is the state of the job? PENDING | RUNNING | SUCCESS | FAILURE
+- anything to action
+
+so.. lets tabulate
+
+if exist(output_file):
+    return SUCCESS
+else:
+    if not_null(workflow_ref):
+        match k8s_state(workflow_ref):
+            case DOESNT_EXIST: # implies it crashed, timed out
+                return FAILURE
+            case PENDING | UNKNOWN:
+                return PENDING
+            case RUNNING:
+                return RUNNING
+            case SUCCESS: # If it has indeed been succesful, then we should have seen the output file! This implies something was wrong with the file write.
+                return FAILURE
+            case FAILED | ERROR:
+                return FAILURE
+    else: # job ref doesnt exist
+        workflow_ref = launch_workflow(input_file_path, workflow_template, output_file_path)
+        return RUNNING
