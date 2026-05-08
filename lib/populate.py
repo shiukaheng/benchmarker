@@ -38,12 +38,12 @@ def insert_jobs(session: Session, jobs: list[Job]) -> tuple[int, int]:
     return inserted, len(jobs) - inserted
 
 
-def populate(
+def generate_jobs(
     engine,
     generator: Callable[[Session], list[Job]],
     dry_run: bool = False,
 ) -> list[Job]:
-    """Populate jobs from database state using a custom generator.
+    """Generate and queue jobs from database state using a custom generator.
 
     Args:
         engine: SQLAlchemy engine

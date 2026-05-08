@@ -8,7 +8,7 @@ import argparse
 from sqlmodel import Session, create_engine, select
 
 from lib.datatypes import Job, S3File
-from lib.populate import populate
+from lib.populate import generate_jobs
 
 
 def my_generator(session: Session) -> list[Job]:
@@ -50,7 +50,7 @@ def main():
 
     engine = create_engine("sqlite:///benchmark.db")
 
-    jobs = populate(engine, generator=my_generator, dry_run=args.dry_run)
+    jobs = generate_jobs(engine, generator=my_generator, dry_run=args.dry_run)
 
     if args.dry_run:
         print(f"[DRY RUN] Would create {len(jobs)} new jobs")
