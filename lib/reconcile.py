@@ -1,4 +1,4 @@
-"""Job reconciliation logic."""
+"""Job reconciliation logic - two-phase: plan then execute."""
 from enum import Enum
 from typing import NamedTuple
 
@@ -6,6 +6,7 @@ from kubernetes import client, config
 from sqlmodel import Session, select
 
 from lib.datatypes import Job, JobStatus, S3File, Workflow
+from lib.actions import LaunchWorkflowAction, UpdateJobStateAction, ReconcileAction
 
 
 class ReconcileState(str, Enum):
@@ -21,16 +22,7 @@ class WorkflowRef(NamedTuple):
 
 
 def get_workflow_phase(workflows: dict[tuple[str, str], Workflow], namespace: str | None, name: str | None) -> str | None:
-    """Lookup workflow phase from the synced workflows dict.
-
-    Args:
-        workflows: Dict mapping (namespace, name) -> Workflow
-        namespace: Workflow namespace
-        name: Workflow name
-
-    Returns:
-        Phase string if found, None if workflow not in DB
-    """
+    """Lookup workflow phase from the synced workflows dict."""
     if not namespace or not name:
         return None
     wf = workflows.get((namespace, name))
@@ -42,16 +34,7 @@ def compute_job_state(
     output_exists: bool,
     workflow_phase: str | None,
 ) -> ReconcileState:
-    """Compute the state of a single job without modifying it.
-
-    Args:
-        job: The job to check
-        output_exists: Whether the output file exists in S3 (from DB sync)
-        workflow_phase: Current phase from synced Workflow table, or None if not found
-
-    Returns:
-        The computed state
-    """
+    """Compute the state of a single job without modifying it."""
     # Case 1: Output exists -> SUCCESS
     if output_exists:
         return ReconcileState.success
@@ -64,89 +47,158 @@ def compute_job_state(
             case "Running":
                 return ReconcileState.running
             case "Succeeded":
-                # Workflow reports success but no output file -> problem
                 return ReconcileState.failed
             case "Failed" | "Error":
                 return ReconcileState.failed
 
-    # Case 3: No workflow reference, or workflow not found in DB, and no output
-    # -> need to launch (or workflow disappeared/crashed)
+    # Case 3: Referenced workflow no longer exists -> failed
     if job.workflow_namespace and job.workflow_name and not workflow_phase:
-        # Referenced workflow no longer exists in K8s (crashed, timed out, manually deleted)
         return ReconcileState.failed
 
     # No workflow reference yet -> need to launch
     return ReconcileState.pending
 
 
-def reconcile_job(
-    job: Job,
-    output_exists: bool,
-    workflow_phase: str | None,
-) -> ReconcileState:
-    """Reconcile a single job's state and update the job object.
+def plan_reconciliation(engine) -> list[ReconcileAction]:
+    """Generate a plan of actions needed to reconcile jobs.
+
+    This is a pure function that examines the current state and produces
+    a list of actions without modifying anything.
 
     Args:
-        job: The job to reconcile (will be modified)
-        output_exists: Whether the output file exists in S3 (from DB sync)
-        workflow_phase: Current phase from synced Workflow table, or None
+        engine: SQLAlchemy engine
 
     Returns:
-        The reconciled state
+        List of actions to execute
     """
-    state = compute_job_state(job, output_exists, workflow_phase)
+    actions: list[ReconcileAction] = []
 
-    # Map reconcile state to job status
-    status_map = {
-        ReconcileState.success: JobStatus.succeeded,
-        ReconcileState.running: JobStatus.running,
-        ReconcileState.pending: JobStatus.pending,
-        ReconcileState.failed: JobStatus.failed,
-    }
-    job.status = status_map[state]
+    with Session(engine) as session:
+        # Get all jobs
+        jobs = session.exec(select(Job)).all()
 
-    return state
+        # Build lookup of workflows from DB
+        workflows = {
+            (w.namespace, w.name): w
+            for w in session.exec(select(Workflow)).all()
+        }
+
+        # Build set of existing output file IDs
+        output_files = session.exec(select(S3File.id)).all()
+        output_file_ids = set(output_files)
+
+        # Get input files for path resolution
+        input_files = {f.id: f for f in session.exec(select(S3File)).all()}
+
+        for job in jobs:
+            output_exists = job.output_file_id in output_file_ids
+            workflow_phase = get_workflow_phase(workflows, job.workflow_namespace, job.workflow_name)
+
+            state = compute_job_state(job, output_exists, workflow_phase)
+
+            # Map state to status string
+            status_map = {
+                ReconcileState.success: "succeeded",
+                ReconcileState.running: "running",
+                ReconcileState.pending: "pending",
+                ReconcileState.failed: "failed",
+            }
+            new_status = status_map[state]
+
+            # Add update state action if status changed
+            if job.status != new_status:
+                actions.append(UpdateJobStateAction(
+                    action_type="update_job_state",
+                    job_input_file_id=job.input_file_id,
+                    job_workflow_template=job.workflow_template,
+                    new_status=new_status,
+                    workflow_namespace=job.workflow_namespace,
+                    workflow_name=job.workflow_name,
+                ))
+
+            # Need to launch workflow?
+            if state == ReconcileState.pending and not job.workflow_name:
+                input_file = input_files.get(job.input_file_id)
+                if not input_file:
+                    continue
+
+                input_s3 = f"s3://{input_file.bucket}/{input_file.key}"
+
+                # Resolve output path
+                output_s3_file = session.get(S3File, job.output_file_id)
+                if output_s3_file:
+                    output_s3 = f"s3://{output_s3_file.bucket}/{output_s3_file.key}"
+                else:
+                    output_key = input_file.key.replace(
+                        "benchmark_source_", "benchmark_output_"
+                    )
+                    output_s3 = f"s3://{input_file.bucket}/{output_key}"
+
+                actions.append(LaunchWorkflowAction(
+                    action_type="launch_workflow",
+                    job_input_file_id=job.input_file_id,
+                    job_workflow_template=job.workflow_template,
+                    input_s3_file=input_s3,
+                    output_s3_file=output_s3,
+                ))
+
+    return actions
 
 
-def launch_workflow(
+def execute_reconciliation(
+    engine,
+    actions: list[ReconcileAction],
+    api: client.CustomObjectsApi | None = None,
+) -> None:
+    """Execute a list of reconciliation actions.
+
+    Args:
+        engine: SQLAlchemy engine
+        actions: List of actions to execute
+        api: Optional K8s API client (will create if not provided)
+    """
+    if api is None:
+        config.load_kube_config()
+        api = client.CustomObjectsApi()
+
+    with Session(engine) as session:
+        for action in actions:
+            match action:
+                case LaunchWorkflowAction():
+                    _execute_launch_workflow(session, api, action)
+
+                case UpdateJobStateAction():
+                    _execute_update_job_state(session, action)
+
+        session.commit()
+
+
+def _execute_launch_workflow(
+    session: Session,
     api: client.CustomObjectsApi,
-    job: Job,
-    input_s3_file: str,
-    output_s3_file: str,
-    namespace: str = "material-gaussians",
-    service_account: str = "product-apps-workflow",
-) -> WorkflowRef:
-    """Launch a new Argo workflow for the job.
-
-    Args:
-        api: K8s CustomObjectsApi
-        job: The job to launch workflow for
-        input_s3_file: Full S3 URI for input file
-        output_s3_file: Full S3 URI for output file
-        namespace: K8s namespace
-        service_account: Service account for workflow
-
-    Returns:
-        Reference to the launched workflow
-    """
+    action: LaunchWorkflowAction,
+) -> None:
+    """Execute a LaunchWorkflowAction."""
     import uuid
 
-    workflow_name = f"{job.workflow_template}-{job.input_file_id[:8]}-{str(uuid.uuid4())[:6]}"
+    workflow_name = (
+        f"{action.job_workflow_template}-{action.job_input_file_id[:8]}-{str(uuid.uuid4())[:6]}"
+    )
 
     workflow = {
         "apiVersion": "argoproj.io/v1alpha1",
         "kind": "Workflow",
         "metadata": {
             "name": workflow_name,
-            "namespace": namespace,
+            "namespace": action.namespace,
         },
         "spec": {
-            "serviceAccountName": service_account,
-            "workflowTemplateRef": {"name": job.workflow_template},
+            "serviceAccountName": action.service_account,
+            "workflowTemplateRef": {"name": action.job_workflow_template},
             "arguments": {
                 "parameters": [
-                    {"name": "input_s3_file", "value": input_s3_file},
-                    {"name": "output_s3_file", "value": output_s3_file},
+                    {"name": "input_s3_file", "value": action.input_s3_file},
+                    {"name": "output_s3_file", "value": action.output_s3_file},
                 ]
             },
         },
@@ -155,93 +207,60 @@ def launch_workflow(
     api.create_namespaced_custom_object(
         group="argoproj.io",
         version="v1alpha1",
-        namespace=namespace,
+        namespace=action.namespace,
         plural="workflows",
         body=workflow,
     )
 
-    return WorkflowRef(namespace=namespace, name=workflow_name)
+    # Update job with workflow reference
+    job = session.get(Job, (action.job_input_file_id, action.job_workflow_template))
+    if job:
+        job.workflow_namespace = action.namespace
+        job.workflow_name = workflow_name
+        job.status = "running"
+
+    print(f"  -> Launched: {action.namespace}/{workflow_name}")
+
+
+def _execute_update_job_state(
+    session: Session,
+    action: UpdateJobStateAction,
+) -> None:
+    """Execute an UpdateJobStateAction."""
+    job = session.get(Job, (action.job_input_file_id, action.job_workflow_template))
+    if job:
+        job.status = action.new_status
+        if action.workflow_namespace:
+            job.workflow_namespace = action.workflow_namespace
+        if action.workflow_name:
+            job.workflow_name = action.workflow_name
 
 
 def run_reconciliation(engine, dry_run: bool = False):
-    """Run full reconciliation loop.
+    """Run full reconciliation loop (plan + execute).
 
     Args:
         engine: SQLAlchemy engine
-        dry_run: If True, only print what would be done without making changes
+        dry_run: If True, only print plan without executing
     """
+    print("Planning reconciliation...")
+    actions = plan_reconciliation(engine)
+
+    if not actions:
+        print("No actions needed.")
+        return
+
+    print(f"\nPlanned {len(actions)} actions:")
+    for i, action in enumerate(actions, 1):
+        prefix = "[DRY] " if dry_run else ""
+        print(f"  {i}. {prefix}{action}")
+
+    if dry_run:
+        print("\n[DRY RUN] No changes committed")
+        return
+
+    print("\nExecuting actions...")
     config.load_kube_config()
     api = client.CustomObjectsApi()
-
-    with Session(engine) as session:
-        # Get all jobs
-        jobs = session.exec(select(Job)).all()
-
-        # Build lookup of workflows from DB (synced by main.py)
-        workflows = {
-            (w.namespace, w.name): w
-            for w in session.exec(select(Workflow)).all()
-        }
-
-        # Build set of existing output file IDs for quick lookup
-        output_files = session.exec(select(S3File.id)).all()
-        output_file_ids = set(output_files)
-
-        # Get input files for path resolution
-        input_files = {
-            f.id: f for f in session.exec(select(S3File)).all()
-        }
-
-        for job in jobs:
-            output_exists = job.output_file_id in output_file_ids
-
-            # Lookup workflow phase from synced DB state
-            workflow_phase = get_workflow_phase(workflows, job.workflow_namespace, job.workflow_name)
-
-            # Get S3 paths if we need to launch
-            input_file = input_files.get(job.input_file_id)
-            if not input_file:
-                print(f"Job {job.input_file_id}: missing input file record")
-                continue
-
-            input_s3 = f"s3://{input_file.bucket}/{input_file.key}"
-
-            # Resolve output file path (may not exist in S3File table yet)
-            output_s3_file = session.get(S3File, job.output_file_id)
-            if output_s3_file:
-                output_s3 = f"s3://{output_s3_file.bucket}/{output_s3_file.key}"
-            else:
-                # Infer output path from input path conventions
-                output_key = input_file.key.replace(
-                    "benchmark_source_", "benchmark_output_"
-                )
-                output_s3 = f"s3://{input_file.bucket}/{output_key}"
-
-            # Compute state (read-only if dry_run)
-            if dry_run:
-                state = compute_job_state(job, output_exists, workflow_phase)
-            else:
-                state = reconcile_job(job, output_exists, workflow_phase)
-
-            # Launch if needed
-            if state == ReconcileState.pending and not job.workflow_name:
-                if dry_run:
-                    print(f"Job ({job.input_file_id[:8]}, {job.workflow_template}): [DRY RUN] would launch workflow")
-                    print(f"  -> input: {input_s3}")
-                    print(f"  -> output: {output_s3}")
-                    continue
-
-                print(f"Job ({job.input_file_id[:8]}, {job.workflow_template}): launching workflow...")
-                ref = launch_workflow(api, job, input_s3, output_s3)
-                job.workflow_namespace = ref.namespace
-                job.workflow_name = ref.name
-                job.status = JobStatus.running
-                state = ReconcileState.running
-                print(f"  -> Launched: {ref.namespace}/{ref.name}")
-
-            print(f"Job ({job.input_file_id[:8]}, {job.workflow_template}): {state.value}")
-
-        if dry_run:
-            print("\n[DRY RUN] No changes committed")
-        else:
-            session.commit()
+    execute_reconciliation(engine, actions, api)
+    print("\nReconciliation complete.")

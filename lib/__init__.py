@@ -3,13 +3,14 @@
 from lib.datatypes import S3File, Image, ImageTag, Workflow, Job, JobStatus
 from lib.utils import SearchPrefix, get_s3files, get_images, get_workflows
 from lib.sync import sync_images, sync_s3_files, sync_workflows
+from lib.actions import LaunchWorkflowAction, UpdateJobStateAction, ReconcileAction
 from lib.reconcile import (
     ReconcileState,
     WorkflowRef,
     get_workflow_phase,
     compute_job_state,
-    reconcile_job,
-    launch_workflow,
+    plan_reconciliation,
+    execute_reconciliation,
     run_reconciliation,
 )
 
@@ -30,12 +31,16 @@ __all__ = [
     "sync_images",
     "sync_s3_files",
     "sync_workflows",
+    # Actions
+    "LaunchWorkflowAction",
+    "UpdateJobStateAction",
+    "ReconcileAction",
     # Reconcile
     "ReconcileState",
     "WorkflowRef",
     "get_workflow_phase",
     "compute_job_state",
-    "reconcile_job",
-    "launch_workflow",
+    "plan_reconciliation",
+    "execute_reconciliation",
     "run_reconciliation",
 ]
