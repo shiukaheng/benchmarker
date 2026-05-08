@@ -1,57 +1,22 @@
-"""Job population logic - generating new jobs from database state."""
-import hashlib
+"""Job population framework - generate and queue jobs from database state."""
 from typing import Callable
 
 from sqlalchemy.dialects.sqlite import insert
-from sqlmodel import Session, select
+from sqlmodel import Session
 
-from lib.datatypes import Job, S3File, ImageTag
-
-
-def calc_output_file_id(input_file_id: str, workflow_template: str) -> str:
-    """Calculate deterministic output file ID from input and template."""
-    return hashlib.sha256(f"{input_file_id}\0{workflow_template}".encode("utf-8")).hexdigest()
-
-
-def generate_cartesian_jobs(
-    session: Session,
-    input_prefix: str = "benchmark_source_",
-    image_tag_filter: str = "benchmark-",
-    workflow_template_prefix: str = "mgs-pipeline-",
-) -> list[Job]:
-    """Generate jobs as cartesian product of datasets × image versions."""
-    existing = {
-        (j.input_file_id, j.workflow_template)
-        for j in session.exec(select(Job)).all()
-    }
-
-    input_files = session.exec(
-        select(S3File).where(S3File.key.like(f"%{input_prefix}%"))
-    ).all()
-
-    image_tags = session.exec(
-        select(ImageTag).where(ImageTag.tag.like(f"%{image_tag_filter}%"))
-    ).all()
-
-    templates = [f"{workflow_template_prefix}{tag.tag}" for tag in image_tags]
-
-    new_jobs = []
-    for inp in input_files:
-        for template in templates:
-            if (inp.id, template) in existing:
-                continue
-            output_id = calc_output_file_id(inp.id, template)
-            new_jobs.append(Job(
-                input_file_id=inp.id,
-                workflow_template=template,
-                output_file_id=output_id,
-                status="pending",
-            ))
-    return new_jobs
+from lib.datatypes import Job
 
 
 def insert_jobs(session: Session, jobs: list[Job]) -> tuple[int, int]:
-    """Insert jobs to database, skipping duplicates."""
+    """Insert jobs to database, skipping duplicates (by composite PK).
+
+    Args:
+        session: Database session
+        jobs: List of Job objects to insert
+
+    Returns:
+        Tuple of (inserted_count, skipped_count)
+    """
     if not jobs:
         return 0, 0
 
@@ -78,7 +43,16 @@ def populate(
     generator: Callable[[Session], list[Job]],
     dry_run: bool = False,
 ) -> list[Job]:
-    """Populate jobs from database state."""
+    """Populate jobs from database state using a custom generator.
+
+    Args:
+        engine: SQLAlchemy engine
+        generator: Function that takes a Session and returns list of Job objects
+        dry_run: If True, return jobs without inserting
+
+    Returns:
+        List of jobs (generated or inserted)
+    """
     with Session(engine) as session:
         jobs = generator(session)
 
