@@ -25,7 +25,7 @@ class ImageTag(SQLModel, table=True):
 class JobStatus(str, Enum):
     pending = "pending"
     running = "running"
-    suceeded = "suceeded"
+    succeeded = "succeeded"
     failed = "failed"
 
 
