@@ -5,7 +5,7 @@ from typing import NamedTuple
 from kubernetes import client, config
 from sqlmodel import Session, select
 
-from datatypes import Job, JobStatus, S3File
+from datatypes import Job, JobStatus, S3File, Workflow
 
 
 class ReconcileState(str, Enum):
@@ -15,67 +15,39 @@ class ReconcileState(str, Enum):
     failed = "failed"
 
 
-class K8sState(str, Enum):
-    pending = "Pending"
-    running = "Running"
-    succeeded = "Succeeded"
-    failed = "Failed"
-    error = "Error"
-    unknown = "Unknown"
-
-
 class WorkflowRef(NamedTuple):
     namespace: str
     name: str
 
 
-def get_k8s_workflow_state(
-    api: client.CustomObjectsApi,
-    namespace: str,
-    name: str,
-) -> K8sState | None:
-    """Fetch workflow state from K8s.
+def get_workflow_phase(workflows: dict[tuple[str, str], Workflow], namespace: str | None, name: str | None) -> str | None:
+    """Lookup workflow phase from the synced workflows dict.
+
+    Args:
+        workflows: Dict mapping (namespace, name) -> Workflow
+        namespace: Workflow namespace
+        name: Workflow name
 
     Returns:
-        K8sState if workflow exists, None if it doesn't exist.
-        Returns K8sState.pending if status or phase is missing (workflow not yet processed).
+        Phase string if found, None if workflow not in DB
     """
-    try:
-        wf = api.get_namespaced_custom_object(
-            group="argoproj.io",
-            version="v1alpha1",
-            namespace=namespace,
-            plural="workflows",
-            name=name,
-        )
-        status = wf.get("status")
-        if status is None:
-            # Workflow exists but controller hasn't processed it yet
-            return K8sState.pending
-
-        phase = status.get("phase")
-        if phase is None:
-            # Phase not yet assigned - treat as pending
-            return K8sState.pending
-
-        return K8sState(phase)
-    except client.ApiException as e:
-        if e.status == 404:
-            return None
-        raise
+    if not namespace or not name:
+        return None
+    wf = workflows.get((namespace, name))
+    return wf.phase if wf else None
 
 
 def compute_job_state(
-    api: client.CustomObjectsApi,
     job: Job,
     output_exists: bool,
+    workflow_phase: str | None,
 ) -> ReconcileState:
     """Compute the state of a single job without modifying it.
 
     Args:
-        api: K8s CustomObjectsApi
         job: The job to check
         output_exists: Whether the output file exists in S3 (from DB sync)
+        workflow_phase: Current phase from synced Workflow table, or None if not found
 
     Returns:
         The computed state
@@ -84,47 +56,45 @@ def compute_job_state(
     if output_exists:
         return ReconcileState.success
 
-    # Case 2: Have workflow reference -> check K8s
-    if job.workflow_namespace and job.workflow_name:
-        k8s_state = get_k8s_workflow_state(api, job.workflow_namespace, job.workflow_name)
-
-        if k8s_state is None:
-            # Workflow doesn't exist (crashed, timed out, manually deleted)
-            return ReconcileState.failed
-
-        match k8s_state:
-            case K8sState.pending | K8sState.unknown:
+    # Case 2: Have workflow reference -> check phase from DB
+    if workflow_phase:
+        match workflow_phase:
+            case "Pending" | "Unknown":
                 return ReconcileState.pending
-            case K8sState.running:
+            case "Running":
                 return ReconcileState.running
-            case K8sState.succeeded:
+            case "Succeeded":
                 # Workflow reports success but no output file -> problem
                 return ReconcileState.failed
-            case K8sState.failed | K8sState.error:
+            case "Failed" | "Error":
                 return ReconcileState.failed
 
-    # Case 3: No workflow reference and no output -> need to launch
+    # Case 3: No workflow reference, or workflow not found in DB, and no output
+    # -> need to launch (or workflow disappeared/crashed)
+    if job.workflow_namespace and job.workflow_name and not workflow_phase:
+        # Referenced workflow no longer exists in K8s (crashed, timed out, manually deleted)
+        return ReconcileState.failed
+
+    # No workflow reference yet -> need to launch
     return ReconcileState.pending
 
 
 def reconcile_job(
-    session: Session,
-    api: client.CustomObjectsApi,
     job: Job,
     output_exists: bool,
+    workflow_phase: str | None,
 ) -> ReconcileState:
     """Reconcile a single job's state and update the job object.
 
     Args:
-        session: Database session
-        api: K8s CustomObjectsApi
         job: The job to reconcile (will be modified)
         output_exists: Whether the output file exists in S3 (from DB sync)
+        workflow_phase: Current phase from synced Workflow table, or None
 
     Returns:
         The reconciled state
     """
-    state = compute_job_state(api, job, output_exists)
+    state = compute_job_state(job, output_exists, workflow_phase)
 
     # Map reconcile state to job status
     status_map = {
@@ -207,6 +177,12 @@ def run_reconciliation(engine, dry_run: bool = False):
         # Get all jobs
         jobs = session.exec(select(Job)).all()
 
+        # Build lookup of workflows from DB (synced by main.py)
+        workflows = {
+            (w.namespace, w.name): w
+            for w in session.exec(select(Workflow)).all()
+        }
+
         # Build set of existing output file IDs for quick lookup
         output_files = session.exec(select(S3File.id)).all()
         output_file_ids = set(output_files)
@@ -218,6 +194,9 @@ def run_reconciliation(engine, dry_run: bool = False):
 
         for job in jobs:
             output_exists = job.output_file_id in output_file_ids
+
+            # Lookup workflow phase from synced DB state
+            workflow_phase = get_workflow_phase(workflows, job.workflow_namespace, job.workflow_name)
 
             # Get S3 paths if we need to launch
             input_file = input_files.get(job.input_file_id)
@@ -233,7 +212,6 @@ def run_reconciliation(engine, dry_run: bool = False):
                 output_s3 = f"s3://{output_s3_file.bucket}/{output_s3_file.key}"
             else:
                 # Infer output path from input path conventions
-                # Assuming: benchmark_source/... -> benchmark_output/...
                 output_key = input_file.key.replace(
                     "benchmark_source_", "benchmark_output_"
                 )
@@ -241,9 +219,9 @@ def run_reconciliation(engine, dry_run: bool = False):
 
             # Compute state (read-only if dry_run)
             if dry_run:
-                state = compute_job_state(api, job, output_exists)
+                state = compute_job_state(job, output_exists, workflow_phase)
             else:
-                state = reconcile_job(session, api, job, output_exists)
+                state = reconcile_job(job, output_exists, workflow_phase)
 
             # Launch if needed
             if state == ReconcileState.pending and not job.workflow_name:

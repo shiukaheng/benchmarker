@@ -6,7 +6,7 @@ from collections import defaultdict
 import boto3
 import oras.client
 
-from datatypes import S3File, Image, ImageTag
+from datatypes import S3File, Image, ImageTag, Workflow
 
 
 def calc_image_id(repo: str, digest: str) -> str:
@@ -169,3 +169,50 @@ def get_images(repos: List[str]) -> tuple[List[Image], List[ImageTag]]:
             continue
 
     return images, image_tags
+
+
+def get_workflows(namespace: str) -> list[Workflow]:
+    """List all Argo workflows in a namespace from K8s.
+
+    Args:
+        namespace: K8s namespace to list workflows from
+
+    Returns:
+        List of Workflow objects
+    """
+    from kubernetes import client, config
+
+    config.load_kube_config()
+    api = client.CustomObjectsApi()
+
+    workflows = []
+
+    try:
+        response = api.list_namespaced_custom_object(
+            group="argoproj.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="workflows",
+        )
+
+        for item in response.get("items", []):
+            metadata = item.get("metadata", {})
+            status = item.get("status", {})
+
+            namespace_val = metadata.get("namespace", namespace)
+            name = metadata.get("name", "")
+            phase = status.get("phase", "Unknown")
+            created_at = metadata.get("creationTimestamp")
+            finished_at = status.get("finishedAt")
+
+            workflows.append(Workflow(
+                namespace=namespace_val,
+                name=name,
+                phase=phase,
+                created_at=created_at,
+                finished_at=finished_at,
+            ))
+    except Exception:
+        pass
+
+    return workflows

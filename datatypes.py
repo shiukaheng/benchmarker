@@ -38,3 +38,13 @@ class Job(SQLModel, table=True):
     # Reference to the K8s workflow we launched
     workflow_namespace: str | None = None
     workflow_name: str | None = None
+
+
+class Workflow(SQLModel, table=True):
+    """Mirror of K8s Argo Workflow state."""
+
+    namespace: str = Field(primary_key=True)
+    name: str = Field(primary_key=True)
+    phase: str  # Pending, Running, Succeeded, Failed, Error, Unknown
+    created_at: str | None = None  # ISO8601 timestamp
+    finished_at: str | None = None  # ISO8601 timestamp

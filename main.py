@@ -1,7 +1,7 @@
 """Main sync script for updating database from external sources."""
 from sqlmodel import SQLModel, create_engine
 
-from sync_utils import sync_images, sync_s3_files
+from sync_utils import sync_images, sync_s3_files, sync_workflows
 from utils import SearchPrefix
 
 
@@ -23,6 +23,12 @@ def main():
     search_prefixes = [SearchPrefix(endpoint_url="", bucket=bucket, prefix=prefix)]
     s3files = sync_s3_files(engine, search_prefixes)
     print(f"  -> Synced {len(s3files)} files")
+
+    # Sync workflows from K8s
+    namespace = "material-gaussians"
+    print(f"Syncing workflows from K8s namespace: {namespace}")
+    workflows = sync_workflows(engine, namespace)
+    print(f"  -> Synced {len(workflows)} workflows")
 
     print("\nSync complete.")
 

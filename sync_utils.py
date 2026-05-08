@@ -2,8 +2,8 @@
 from sqlalchemy.dialects.sqlite import insert
 from sqlmodel import Session
 
-from datatypes import Image, ImageTag, S3File
-from utils import get_images, get_s3files, SearchPrefix
+from datatypes import Image, ImageTag, S3File, Workflow
+from utils import get_images, get_s3files, get_workflows, SearchPrefix
 
 
 def sync_images(engine, repos: list[str]) -> tuple[list[Image], list[ImageTag]]:
@@ -68,3 +68,42 @@ def sync_s3_files(engine, search_prefixes: list[SearchPrefix]) -> list[S3File]:
             session.commit()
 
     return s3files
+
+
+def sync_workflows(engine, namespace: str) -> list[Workflow]:
+    """Fetch workflows from K8s and bulk upsert to database.
+
+    Args:
+        engine: SQLAlchemy engine to use for database operations
+        namespace: K8s namespace to list workflows from
+
+    Returns:
+        List of Workflow objects that were synced
+    """
+    workflows = get_workflows(namespace)
+
+    with Session(engine) as session:
+        if workflows:
+            wf_data = [
+                {
+                    "namespace": w.namespace,
+                    "name": w.name,
+                    "phase": w.phase,
+                    "created_at": w.created_at,
+                    "finished_at": w.finished_at,
+                }
+                for w in workflows
+            ]
+            stmt = insert(Workflow).values(wf_data)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["namespace", "name"],
+                set_={
+                    "phase": stmt.excluded.phase,
+                    "created_at": stmt.excluded.created_at,
+                    "finished_at": stmt.excluded.finished_at,
+                },
+            )
+            session.exec(stmt)
+            session.commit()
+
+    return workflows
